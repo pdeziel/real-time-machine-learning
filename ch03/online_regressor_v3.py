@@ -26,7 +26,6 @@ class OnlineRegressorV3:
         return False
 
     def publish_model_event(self, event):
-        print(f"Sending model event: {event}")
         connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
         channel = connection.channel()
         channel.queue_declare(
