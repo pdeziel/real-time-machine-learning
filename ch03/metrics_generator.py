@@ -3,8 +3,8 @@ import pika
 from river import metrics
 
 
-class MetricsCollector:
-    def __init__(self, stream_name, file_path):
+class MetricsGenerator:
+    def __init__(self, stream_name):
         self.stream_name = stream_name
         self.metric = metrics.MAE()
 
@@ -34,7 +34,5 @@ class MetricsCollector:
         channel.start_consuming()
 
 
-metrics_collector = MetricsCollector(
-    stream_name="flight_predictions"
-)
-metrics_collector.run()
+metrics_generator = MetricsGenerator(stream_name="flight_predictions")
+metrics_generator.run()
