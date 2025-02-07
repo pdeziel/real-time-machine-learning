@@ -12,6 +12,10 @@ class FlightPublisher:
 
     def get_events(self):
         flights_df = pd.read_csv(self.file_path)
+        flights_df = flights_df.loc[
+            (flights_df["callsign"].str.strip() == "ARP41")
+            & (flights_df["icao24"] == "3571d1")
+        ]
         for _, row in flights_df.iterrows():
             yield (row.to_dict())
             time.sleep(self.interval_sec)
