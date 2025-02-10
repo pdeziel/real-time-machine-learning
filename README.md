@@ -1,5 +1,5 @@
 # Real-time Machine Learning
-This is the official code repository for the book Real-time Machine Learning.
+This is the official code repository for the book [Real-Time Machine Learning](https://www.manning.com/books/real-time-machine-learning) by Patrick Deziel and Prema Roman.
 
 ## Installing Dependencies
 We recommend that you create a virtual environment before installing any dependencies.
