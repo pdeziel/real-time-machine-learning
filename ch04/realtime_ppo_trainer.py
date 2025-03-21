@@ -113,7 +113,7 @@ class RealTimePPOTrainer:
 
     def process_rating_data(self, rating_data):
         rating = rating_data["rating"]
-        interaction_id = rating_data["id"]
+        interaction_id = rating_data["conversation_id"]
         if interaction_id in self.interaction_info:
             interaction_details = self.interaction_info[interaction_id]
             query_tensors = interaction_details["query_tensors"]
@@ -121,10 +121,9 @@ class RealTimePPOTrainer:
             rating_score = self.get_rating_score(rating)
             rewards = [torch.tensor(rating_score)]
             stats = self.ppo_trainer.step(query_tensors, response_tensors, rewards)
-            print(self.ppo_trainer.model.parameters())
             self.ppo_trainer.log_stats(stats, interaction_details, rewards)
             self.num_steps += 1
-            if self.num_steps == self.checkpoint_steps:
+            if self.num_steps % self.checkpoint_steps == 0:
                 timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
                 model_checkpoint = f"{self.model_dir}/model/checkpoint-{timestamp}"
                 os.makedirs(model_checkpoint, exist_ok=True)
@@ -135,32 +134,23 @@ class RealTimePPOTrainer:
                 self.ppo_trainer.model.save_pretrained(model_checkpoint)
                 self.ppo_trainer.tokenizer.save_pretrained(tokenizer_checkpoint)
                 print("saved model checkpoint")
-                self.num_steps = 0
         else:
             print(f"Interaction not found for ID {interaction_id}")
 
-    def tokenize(self, sample):
-        sample["templated_text"] = self.tokenizer.apply_chat_template(
-            sample["messages"], tokenize=False, add_generation_prompt=True
+    def tokenize(self, messages):
+        templated_text = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
         )
-        sample["input_ids"] = self.tokenizer.encode(
-            sample["templated_text"], return_tensors="pt"
+        messages_tokenized = self.tokenizer.encode(
+            templated_text, return_tensors="pt"
         ).to(self.device)
-        return sample
+        return messages_tokenized
 
     def process_prompt_data(self, prompt_data):
-        # ppo_data = {}
         messages = prompt_data["messages"]
         print(messages)
-        messages_dict = {"messages": [messages]}
-        print(messages_dict)
-        messages_dataset = Dataset.from_dict(messages_dict)
-        print(messages_dataset[0])
-        messages_dataset = messages_dataset.map(self.tokenize, batched=False)
-        messages_dataset.set_format(
-            type="torch", columns=["input_ids"], device=self.device
-        )
-        query_tensors = [q.squeeze() for q in messages_dataset["input_ids"]]
+        messages_tokenized = self.tokenize(messages)
+        query_tensors = [q.squeeze() for q in messages_tokenized]
         response_tensors = []
         for query in query_tensors:
             query_response = self.ppo_trainer.generate(
@@ -177,7 +167,7 @@ class RealTimePPOTrainer:
         prompt_data["messages"] = messages
         # add interaction details to interaction_info
         interaction_details = {}
-        interaction_id = prompt_data["id"]
+        interaction_id = prompt_data["conversation_id"]
         interaction_details["messages"] = prompt_data["messages"]
         interaction_details["query_tensors"] = query_tensors
         interaction_details["response_tensors"] = response_tensors

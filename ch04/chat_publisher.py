@@ -15,7 +15,7 @@ class ChatPublisher:
         webgpt_data = webgpt_data.select(range(5))
         for i, rec in enumerate(webgpt_data):
             question = rec["question"]["full_text"]
-            chat_event["id"] = i
+            chat_event["conversation_id"] = i
             chat_event["event_type"] = "prompt"
             chat_event["messages"] = [
                 {"role": "system", "content": "You are a helpful assistant."},
@@ -41,7 +41,7 @@ class ChatPublisher:
 
 
 chat_publisher = ChatPublisher(
-    interval_sec=60,
+    interval_sec=15,
     stream_name="interactions",
 )
 chat_publisher.run()

@@ -25,10 +25,10 @@ class FeedbackGenerator:
     def process_message(self, channel, method, properties, body):
         response_data = json.loads(body)
         print(f"Received response data: {response_data}")
-        interaction_id = response_data["id"]
+        interaction_id = response_data["conversation_id"]
         feedback = random.choice(self.choices)
         rating_event = {}
-        rating_event["id"] = interaction_id
+        rating_event["conversation_id"] = interaction_id
         rating_event["event_type"] = "feedback"
         rating_event["rating"] = feedback
         print(f"Generated rating event: {rating_event}")
