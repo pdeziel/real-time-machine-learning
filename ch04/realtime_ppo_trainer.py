@@ -1,9 +1,6 @@
 import json
 import os
 import time
-
-from datasets import Dataset
-import pika
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from trl import (
@@ -11,34 +8,32 @@ from trl import (
     PPOConfig,
     AutoModelForCausalLMWithValueHead,
     create_reference_model,
-    ModelConfig,
 )
 from peft import LoraConfig, get_peft_model, TaskType
-from accelerate import Accelerator
+
+from utils.publisher import StreamPublisher
+from utils.subscriber import StreamSubscriber
 
 
 class RealTimePPOTrainer:
-    def __init__(self, config=None, model_name="Qwen/Qwen2.5-0.5B-Instruct"):
-        self.config = config
-        if self.config is None:
-            self.config = {}
+    def __init__(
+        self,
+        model_name="Qwen/Qwen2.5-0.5B-Instruct",
+        interactions_stream="interactions",
+        responses_stream="responses",
+        model_dir="tuned_models",
+        log_dir="logs",
+        checkpoint_steps=2,
+        device_map="auto",
+    ):
         self.model_name = model_name
-        self.model_dir = self.config.get("model_dir", "model_output")
-        self.log_dir = self.config.get("log_dir", "log_output")
-        self.interactions_stream_name = self.config.get(
-            "interactions_stream_name", "interactions"
-        )
-        self.responses_stream_name = self.config.get(
-            "responses_stream_name", "responses"
-        )
-        self.checkpoint_steps = self.config.get("checkpoint_steps", 2)
-        self.ref_model = None
-        self.ppo_model = None
-        self.ppo_trainer = None
-        self.ppo_trained_model = None
-        self.ppo_trained_tokenizer = None
+        self.model_dir = model_dir
+        self.log_dir = log_dir
+        self.checkpoint_steps = checkpoint_steps
+        self.publisher = StreamPublisher(responses_stream)
+        self.subscriber = StreamSubscriber(interactions_stream)
         self.ppo_config = PPOConfig(
-            model_name=model_name,
+            model_name=self.model_name,
             learning_rate=1.41e-5,
             batch_size=1,
             mini_batch_size=1,
@@ -47,17 +42,10 @@ class RealTimePPOTrainer:
             project_kwargs={"logging_dir": self.log_dir},
         )
         self.num_steps = 0
-        self.interaction_info = {}  # to track interactions and rewards
-        self.initialize_model()
+        self.conversations = {}  # to track interactions and rewards
+        self.initialize_model(device_map)
 
-    def initialize_model(self):
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            self.device = torch.device("mps")
-        else:
-            self.accelerator = Accelerator(cpu=True)
-            self.device = torch.device("cpu")
+    def initialize_model(self, device_map):
         lora_config = LoraConfig(
             r=8,
             lora_alpha=16,
@@ -66,12 +54,12 @@ class RealTimePPOTrainer:
             task_type=TaskType.CAUSAL_LM,
         )
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_name, device_map=self.device
+            self.model_name, device_map=device_map
         )
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         peft_model = get_peft_model(self.model, lora_config)
         self.ppo_model = AutoModelForCausalLMWithValueHead.from_pretrained(
-            peft_model, device_map=self.device
+            peft_model, device_map=device_map
         )
         self.ref_model = create_reference_model(self.ppo_model)
         self.generation_kwargs = {
@@ -86,43 +74,39 @@ class RealTimePPOTrainer:
             ref_model=self.ref_model,
             tokenizer=self.tokenizer,
         )
+        self.device = self.model.device
         self.ppo_trainer.current_device = self.device
 
-    def publish_model_response(self, prompt_response):
-        connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
-        channel = connection.channel()
-        channel.queue_declare(
-            queue=self.responses_stream_name,
-            durable=True,
-            arguments={"x-queue-type": "stream"},
-        )
-        channel.basic_publish(
-            exchange="",
-            routing_key=self.responses_stream_name,
-            body=json.dumps(prompt_response),
-        )
-        connection.close()
-
-    def get_rating_score(self, rating):
+    def rating_to_score(self, rating):
         if rating == "positive":
             return 1.0
         elif rating == "negative":
             return -1.0
-        elif rating == "neutral":
+        else:
             return 0.0
 
     def process_rating_data(self, rating_data):
+        """
+        This function is called when the subscriber receives a rating for a
+        conversation in order to incrementally train the model.
+        """
+
         rating = rating_data["rating"]
-        interaction_id = rating_data["conversation_id"]
-        if interaction_id in self.interaction_info:
-            interaction_details = self.interaction_info[interaction_id]
-            query_tensors = interaction_details["query_tensors"]
-            response_tensors = interaction_details["response_tensors"]
-            rating_score = self.get_rating_score(rating)
-            rewards = [torch.tensor(rating_score)]
+        id = rating_data["conversation_id"]
+        if id in self.conversations:
+            # Get the cached conversation info
+            info = self.conversations[id]
+            query_tensors = info["query_tensors"]
+            response_tensors = info["response_tensors"]
+            rewards = [torch.tensor(self.rating_to_score(rating))]
+
+            # Train a step with the observed rewards
+            print(f"training step for conversation {id}, rewards: {rewards}")
             stats = self.ppo_trainer.step(query_tensors, response_tensors, rewards)
-            self.ppo_trainer.log_stats(stats, interaction_details, rewards)
+            self.ppo_trainer.log_stats(stats, info, rewards)
             self.num_steps += 1
+
+            # Save the latest checkpoint of the model
             if self.num_steps % self.checkpoint_steps == 0:
                 timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
                 model_checkpoint = f"{self.model_dir}/model/checkpoint-{timestamp}"
@@ -133,9 +117,11 @@ class RealTimePPOTrainer:
                 os.makedirs(tokenizer_checkpoint, exist_ok=True)
                 self.ppo_trainer.model.save_pretrained(model_checkpoint)
                 self.ppo_trainer.tokenizer.save_pretrained(tokenizer_checkpoint)
-                print("saved model checkpoint")
+                print(
+                    f"step: {self.num_steps}, saved model checkpoint to {model_checkpoint}"
+                )
         else:
-            print(f"Interaction not found for ID {interaction_id}")
+            print(f"error: interaction not found for ID {id}")
 
     def tokenize(self, messages):
         templated_text = self.tokenizer.apply_chat_template(
@@ -147,10 +133,13 @@ class RealTimePPOTrainer:
         return messages_tokenized
 
     def process_prompt_data(self, prompt_data):
+        """
+        This function is called when a user message is received and generates a
+        response completion using the current model.
+        """
+
         messages = prompt_data["messages"]
-        print(messages)
-        messages_tokenized = self.tokenize(messages)
-        query_tensors = [q.squeeze() for q in messages_tokenized]
+        query_tensors = [q.squeeze() for q in self.tokenize(messages)]
         response_tensors = []
         for query in query_tensors:
             query_response = self.ppo_trainer.generate(
@@ -162,57 +151,43 @@ class RealTimePPOTrainer:
         ]
         # append response to messages
         messages.append({"role": "assistant", "content": response[0]})
-        print(f"Updated messages: {messages}")
         # update prompt data
         prompt_data["messages"] = messages
-        # add interaction details to interaction_info
-        interaction_details = {}
-        interaction_id = prompt_data["conversation_id"]
-        interaction_details["messages"] = prompt_data["messages"]
-        interaction_details["query_tensors"] = query_tensors
-        interaction_details["response_tensors"] = response_tensors
-        interaction_details["response"] = response
-        self.interaction_info[interaction_id] = interaction_details
-        self.publish_model_response(prompt_data)
+        # update the conversation in local memory
+        info = {}
+        id = prompt_data["conversation_id"]
+        info["messages"] = prompt_data["messages"]
+        info["query_tensors"] = query_tensors
+        info["response_tensors"] = response_tensors
+        info["response"] = response
+        self.conversations[id] = info
+
+        # Publish the completed messages to the outgoing stream
+        self.publisher.publish(prompt_data)
 
     def process_interaction(self, channel, method, properties, body):
+        print(f"Received interaction: {body}")
         interaction = json.loads(body)
-        print("Received interaction:", interaction)
-        event_type = interaction.get("event_type", None)
-        if event_type == "prompt":
-            messages = interaction["messages"]
-            if len(messages) > 0:
-                self.process_prompt_data(interaction)
-            else:
-                print("No messages found in the prompt event.")
-        elif event_type == "feedback":
-            print("Processing feedback event:", interaction)
-            rating = interaction["rating"]
-            if rating is not None:
-                self.process_rating_data(interaction)
-            else:
-                print("No rating found in the feedback event.")
+        if "messages" in interaction and interaction["messages"][-1]["role"] == "user":
+            self.process_prompt_data(interaction)
+        elif "rating" in interaction:
+            self.process_rating_data(interaction)
         else:
-            print("Unknown event type:", event_type)
-
+            print("error: unrecognized event schema")
         channel.basic_ack(delivery_tag=method.delivery_tag)
 
     def run(self):
-        connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
-        channel = connection.channel()
-        channel.queue_declare(
-            queue=self.interactions_stream_name,
-            durable=True,
-            arguments={"x-queue-type": "stream"},
-        )
-        channel.basic_qos(prefetch_count=1)
-        channel.basic_consume(
-            queue=self.interactions_stream_name,
+        """
+        Run the subscriber stream and respond to interaction events.
+        """
+
+        self.subscriber.start(
+            block=True,
             on_message_callback=self.process_interaction,
-            arguments={"x-stream-offset": "first"},
+            stream_offset="last",
         )
-        channel.start_consuming()
 
 
-ppo_trainer = RealTimePPOTrainer()
-ppo_trainer.run()
+if __name__ == "__main__":
+    ppo_trainer = RealTimePPOTrainer()
+    ppo_trainer.run()
