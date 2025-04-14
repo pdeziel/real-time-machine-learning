@@ -46,13 +46,24 @@ class ChatApp:
         self.conversation_id = str(uuid.uuid4())
 
     def run(self):
+        css = """
+        #chatbot {background-color: lightgray}
+        """
+
         self.subscriber.start(block=False, stream_offset="last")
-        with gr.Blocks() as app:
-            chatbot = gr.Chatbot(type="messages", render=False)
+        with gr.Blocks(
+            theme=gr.themes.Glass(
+                text_size="lg",
+            ),
+            css=css,
+        ) as app:
+            chatbot = gr.Chatbot(type="messages", render=False, elem_id="chatbot")
             chatbot.like(self.on_vote)
             chatbot.clear(self.on_clear)
             textbox = gr.Textbox(
-                placeholder="Enter a message to chat with the model", render=False
+                placeholder="Enter a message to chat with the model",
+                elem_id="chatbot",
+                render=False,
             )
             gr.ClearButton([chatbot, textbox], render=False)
             gr.ChatInterface(
