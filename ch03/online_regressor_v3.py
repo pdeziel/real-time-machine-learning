@@ -47,7 +47,7 @@ class OnlineRegressorV3:
                 features = {"time": time, "geoaltitude": geoaltitude}
                 velocity_pred = self.model.predict_one(features)
                 velocity = data["velocity"]
-                if velocity is not None:
+                if velocity:
                     self.model.learn_one(features, velocity)
                     print(
                         f"geoaltitude: {geoaltitude}, velocity_pred: {velocity_pred}, velocity: {velocity}"
