@@ -5,8 +5,12 @@ from urllib import request
 
 
 class FlightPublisherV3:
-    def __init__(self, url, interval_sec, stream_name):
-        self.url = url
+    def __init__(self, lat_min, lat_max, long_min, long_max, interval_sec, stream_name):
+        self.lat_min = lat_min
+        self.lat_max = lat_max
+        self.long_min = long_min
+        self.long_max = long_max
+        self.url = f"https://opensky-network.org/api/states/all?lamin={lat_min}&lomin={long_min}&lamax={lat_max}&lomax={long_max}"
         self.interval_sec = interval_sec
         self.stream_name = stream_name
 
@@ -51,7 +55,10 @@ class FlightPublisherV3:
 
 
 publisher = FlightPublisherV3(
-    url="https://opensky-network.org/api/states/all?lamin=45.8389&lomin=5.9962&lamax=47.8229&lomax=10.5226",
+    lat_min=45.8389,
+    lat_max=47.8229,
+    long_min=5.9962,
+    long_max=10.5226,
     interval_sec=60,
     stream_name="flight_events",
 )
